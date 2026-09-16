@@ -28,6 +28,7 @@ import {
   type StatusGroup,
   stopBackgroundProcess
 } from '@/store/composer-status'
+import { $displaySections } from '@/store/display-sections'
 import { $freeTierRoute, $freeTierStatus, freeTierStripPending } from '@/store/free-tier'
 import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview-status'
 import { $sessionControlBySession, refreshSessionControl } from '@/store/session-control'
@@ -125,15 +126,36 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
 
   const isStructuredSupported = controlEntry?.capability === 'supported'
 
+  const displaySections = useStore($displaySections)
+  const activityHidden = displaySections.activity === 'hidden'
+  const subagentsHidden = displaySections.subagents === 'hidden'
+
+  // The raw grouping still drives background-process tracking (polling, the
+  // localhost-preview lifetime) even when its ROW is hidden — a hidden
+  // section is a presentation choice, not a reason to stop watching the
+  // process it's about.
+  const rawGroups = useMemo(() => groupStatusItems(items), [items])
+
   const groups = useMemo(() => {
-    const raw = groupStatusItems(items)
+    let filtered = rawGroups
 
     if (isStructuredSupported) {
-      return raw.filter(g => g.type !== 'goal')
+      filtered = filtered.filter(g => g.type !== 'goal')
     }
 
-    return raw
-  }, [items, isStructuredSupported])
+    if (subagentsHidden) {
+      filtered = filtered.filter(g => g.type !== 'subagent')
+    }
+
+    // `display.sections.activity: hidden` drops the ambient background-process
+    // scaffolding. The goal indicator is primary Goal Mode status, not ambient
+    // meta, and the actionable todo checklist stays regardless.
+    if (activityHidden) {
+      filtered = filtered.filter(g => g.type !== 'background')
+    }
+
+    return filtered
+  }, [rawGroups, isStructuredSupported, subagentsHidden, activityHidden])
 
   // Seed from the registry on session open; event-driven refreshes (terminal /
   // process tool completions) live in use-message-stream. This must NOT reset
@@ -150,7 +172,7 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
     }
   }, [sessionId])
 
-  const hasRunningBackground = groups.some(g => g.type === 'background' && g.items.some(i => i.state === 'running'))
+  const hasRunningBackground = rawGroups.some(g => g.type === 'background' && g.items.some(i => i.state === 'running'))
 
   // Drop localhost previews once no dev server is left running — that's what made
   // dead `localhost:5174` chips stick around. On-disk file previews are kept.

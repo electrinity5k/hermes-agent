@@ -4,6 +4,7 @@ import { setTerminalFontFamilyFromConfig } from '@/app/right-sidebar/terminal/te
 import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
 import { normalize } from '@/lib/text'
+import { setDisplaySectionsFromConfig } from '@/store/display-sections'
 import { setDisplayTimestampsFromConfig } from '@/store/display-timestamps'
 import {
   getComposerSelectionGeneration,
@@ -140,6 +141,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         }
 
         setDisplayTimestampsFromConfig(config.display?.timestamps)
+        setDisplaySectionsFromConfig(config.display)
         setTerminalFontFamilyFromConfig(config.terminal?.font_family)
         setChatFontFamilyFromConfig(config.desktop?.font_family)
 

@@ -29,6 +29,7 @@ import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
 import { isTodoToolName } from '@/lib/todos'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
+import { $displaySections } from '@/store/display-sections'
 import { $reasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 
 type TimelineToolCallProps = ToolCallMessagePartProps & { completedAt?: number; timestamp?: number }
@@ -73,8 +74,20 @@ const DelegateToolPart: FC<TimelineToolCallProps> = props => {
 }
 
 const ChainToolFallback: FC<TimelineToolCallProps> = props => {
+  const toolsHidden = useStore($displaySections).tools === 'hidden'
+
   // todo parts are hoisted to a dedicated panel above the message content.
   if (isTodoToolName(props.toolName)) {
+    return null
+  }
+
+  // `display.sections.tools: hidden` drops ordinary tool-call rows entirely
+  // (no DOM, not just collapsed) — but never a live clarify question (it
+  // needs an answer), nor a failed or dangling call (it needs to stay
+  // debuggable). Those three routes below still resolve to a real row.
+  const isPendingClarify = props.toolName === 'clarify' && !settledWithoutResult(props)
+
+  if (toolsHidden && !isPendingClarify && !props.isError && !settledWithoutResult(props)) {
     return null
   }
 
@@ -314,6 +327,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
   // the tour with ::ask"), and a first-time user reading that alongside the
   // greeting breaks the one conversation the guide is trying to have.
   const guidedChat = useOnboardingChatActive()
+  const thinkingHidden = useStore($displaySections).thinking === 'hidden'
 
   const pending = useAuiState(
     s =>
@@ -352,7 +366,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
     }, undefined)
   )
 
-  if (!hasContent || guidedChat) {
+  if (!hasContent || guidedChat || thinkingHidden) {
     return null
   }
 

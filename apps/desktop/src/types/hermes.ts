@@ -426,6 +426,9 @@ export interface HermesConfig {
     skin?: string
     interim_assistant_messages?: boolean
     timestamps?: boolean
+    show_reasoning?: boolean
+    details_mode?: string
+    sections?: Partial<Record<'thinking' | 'tools' | 'subagents' | 'activity', string>>
   }
   desktop?: {
     font_family?: string
