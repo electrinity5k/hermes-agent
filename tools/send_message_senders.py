@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import time
+from types import SimpleNamespace
 
 from agent.redact import redact_sensitive_text
 
@@ -236,10 +237,49 @@ def _telegram_format(message):
         return message, ParseMode.MARKDOWN_V2, False  # formatting unavailable: send as-is
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
-    """One-shot Telegram Bot API send; parse failures fall back to plain text."""
+async def _try_standalone_rich_send(bot, chat_id, message, thread_kwargs, rich_extra, *, disable_link_previews=False):
+    """Best-effort ``sendRichMessage`` for a standalone (no live gateway) Telegram send, using
+    the same semantic Rich-HTML renderer and eligibility rules as the gateway adapter's
+    ``send()`` (#comprehensive-rich-messages) — so cron/scheduled delivery formats identically
+    to a live reply. Returns the sent ``Message``, or ``None`` to fall back to the legacy
+    chunked MarkdownV2/HTML path (message already contains literal HTML, rich is disabled,
+    content fails a safety check, or the API call itself fails)."""
+    if not (rich_extra or {}).get("rich_messages"):
+        return None
+    if re.search(r'<[a-zA-Z/][^>]*>', message):
+        return None  # caller already opted into literal HTML passthrough
     try:
-        formatted, send_parse_mode, _has_html = _telegram_format(message)
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+        adapter = TelegramAdapter.__new__(TelegramAdapter)
+        adapter._bot = bot
+        adapter._allow_cjk_rich_messages = bool((rich_extra or {}).get("allow_cjk_rich_messages"))
+        rich_ok = adapter._rich_content_ok(message)
+    except Exception:
+        return None  # adapter unavailable (e.g. python-telegram-bot missing) — legacy path
+    if not rich_ok:
+        return None
+    payload = {"chat_id": chat_id, "rich_message": adapter._rich_message_payload(message), **thread_kwargs}
+    if disable_link_previews:
+        payload["link_preview_options"] = {"is_disabled": True}
+    try:
+        result = await bot.do_api_request("sendRichMessage", api_kwargs=payload)
+    except Exception as exc:
+        logger.debug("Standalone Telegram sendRichMessage failed (%s) — falling back to legacy send",
+                     _sanitize_error_text(exc))
+        return None
+    message_id = result.get("message_id") if isinstance(result, dict) else getattr(result, "message_id", None)
+    return SimpleNamespace(message_id=message_id)
+
+
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False,
+                          force_document=False, rich_extra=None):
+    """One-shot Telegram Bot API send; parse failures fall back to plain text.
+
+    ``rich_extra`` (the platform's ``extra`` config, e.g. ``{"rich_messages": True}``) opts a
+    plain-text (no media) send into the same semantic Rich Messages path the gateway adapter
+    uses, instead of this sender's separate MarkdownV2-only formatting.
+    """
+    try:
         bot = _telegram_bot(token)
         from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
         from gateway.platforms.base import BasePlatformAdapter, utf16_len
@@ -248,9 +288,17 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         int_chat_id = normalize_telegram_chat_id(chat_id)
         media_files = media_files or []
         thread_kwargs = _telegram_thread_kwargs(thread_id)
+        rich_msg = None
+        if not media_files and message.strip():
+            rich_msg = await _try_standalone_rich_send(
+                bot, int_chat_id, message, thread_kwargs, rich_extra, disable_link_previews=disable_link_previews)
+        if rich_msg is not None:
+            formatted, send_parse_mode, _has_html = "", None, False  # nothing left for the legacy text path
+        else:
+            formatted, send_parse_mode, _has_html = _telegram_format(message)
         # disable_web_page_preview is only valid for send_message, not media sends.
         text_kwargs = {**thread_kwargs, **({"disable_web_page_preview": True} if disable_link_previews else {})}
-        last_msg, warnings, _tg_caption = None, [], None
+        last_msg, warnings, _tg_caption = rich_msg, [], None
         # MEDIA caption rides on the bubble as its *formatted* caption; formatting can inflate a
         # raw <1024 string past Telegram's cap, so re-check in UTF-16 units.
         _cap, _ = _media_caption_split(message, media_files, max_caption_len=_TELEGRAM_CAPTION_LIMIT)

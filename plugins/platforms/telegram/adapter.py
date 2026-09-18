@@ -284,33 +284,13 @@ def _separate_chunk_indicator_from_fence(text: str) -> str:
 
 
 # MarkdownV2 has no table syntax, so pipe tables become bullet groups via convert_table_to_bullets().
-from gateway.platforms.helpers import (
-    TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, compile_mention_patterns, convert_table_to_bullets as _wrap_markdown_tables)
+from gateway.platforms.helpers import compile_mention_patterns, convert_table_to_bullets as _wrap_markdown_tables
 from gateway.platforms.helpers import cancel_task
 
-# Rich-message regions whose internal newlines must stay bare (Telegram renders them natively):
-# fenced code blocks OR GFM pipe-table blocks (header row, delimiter row, data rows).
-_RICH_PROTECTED_REGION_RE = re.compile(
-    r'(?:```[^\n]*\n[\s\S]*?```)'                       # fenced code block
-    r'|(?:^[^\n]*\|[^\n]*\n'                            # table header row (has a pipe)
-    r'[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*'  # delimiter
-    r'(?:\n[^\n]*\|[^\n]*)*)',                          # data rows (newline-led, trailing \n left for prose)
-    re.MULTILINE)
-
-
-def _rich_normalize_linebreaks(text: str) -> str:
-    """Convert lone ``\\n`` (a Markdown soft break) to hard breaks for sendRichMessage; ``\\n\\n``,
-    fenced code and pipe tables are left untouched."""
-    if not text or '\n' not in text:
-        return text
-    out: list[str] = []
-    pos = 0
-    for m in _RICH_PROTECTED_REGION_RE.finditer(text):
-        out.append(re.sub(r'(?<!\n)\n(?!\n)', '  \n', text[pos:m.start()]))
-        out.append(m.group(0))  # protected region kept verbatim
-        pos = m.end()
-    out.append(re.sub(r'(?<!\n)\n(?!\n)', '  \n', text[pos:]))
-    return ''.join(out)
+# Markdown -> Telegram Rich HTML (Bot API 10.1/10.2 sendRichMessage `html` field). See module
+# docstring: the html field renders native lists correctly where the raw-markdown/blocks fields
+# did not.
+from plugins.platforms.telegram.telegram_rich_html import markdown_to_rich_html as _rich_markdown_to_html
 
 
 # Internal safety bounds (not user knobs): no reconnect/teardown path may hang on a dead CLOSE-WAIT
@@ -1268,24 +1248,6 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return bool(content and self._RICH_CJK_RE.search(content))
 
-    def _needs_rich_rendering(self, content: str) -> bool:
-        """True for constructs MarkdownV2 degrades: pipe tables, task lists, <details>, block math.
-        Ordinary replies stay on MarkdownV2 so clients render consistent font weight/spacing.
-
-        The rich endpoint is reserved for constructs where raw markdown materially improves output: pipe
-        tables (MarkdownV2 has no table syntax and rewrites them into bullet lists), GFM task lists,
-        collapsible ``<details>`` blocks, and block math. Adapted from #45995 (@YonganZhang).
-        """
-        if not content:
-            return False
-        if any(_TABLE_SEPARATOR_RE.match(line) for line in content.splitlines()):
-            return True
-        if re.search(r"(?m)^\s*[-*]\s+\[[ xX]\]\s+", content):
-            return True
-        if re.search(r"(?m)^<details\b|^</details>|^<summary\b|^</summary>", content):
-            return True
-        return "$$" in content
-
     def _rich_delivery_enabled(self) -> bool:
         """Whether rich delivery is allowed (``rich_messages`` opt-in)."""
         return bool(getattr(self, "_rich_messages_enabled", True))
@@ -1304,12 +1266,17 @@ class TelegramAdapter(BasePlatformAdapter):
             and self._bot_supports_rich())
 
     def _rich_eligible(self, content: str) -> bool:
-        """Rich eligibility ignoring ``expect_edits`` (a streamed preview's FINAL edit still upgrades)."""
+        """Rich eligibility ignoring ``expect_edits`` (a streamed preview's FINAL edit still upgrades).
+
+        Comprehensive: every non-blank reply that clears the shared safety checks (CJK/Desktop
+        crash-shape guards, size cap, capability latch) is eligible, not just content with a
+        table/task-list/details/math — Rich Messages is the default formatting path, matching
+        MarkdownV2's old default-everywhere role.
+        """
         return bool(
             self._rich_delivery_enabled()
             and not getattr(self, "_rich_send_disabled", False)
             and content and content.strip()
-            and self._needs_rich_rendering(content)
             and self._rich_content_ok(content))
 
     def _should_attempt_rich(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
@@ -1341,9 +1308,11 @@ class TelegramAdapter(BasePlatformAdapter):
         return self.RICH_MESSAGE_MAX_CHARS if self._rich_transport_available() else None
 
     def _rich_message_payload(self, content: str, *, skip_entity_detection: bool = False) -> Dict[str, Any]:
-        """``InputRichMessage`` from RAW markdown — never ``format_message(content)``, whose MarkdownV2
-        escaping destroys table pipes."""
-        payload: Dict[str, Any] = {"markdown": _rich_normalize_linebreaks(content)}
+        """``InputRichMessage`` from agent markdown rendered to Telegram Rich HTML — never
+        ``format_message(content)``, whose MarkdownV2 escaping destroys table pipes, and never
+        the raw ``markdown`` field, whose list rendering is the rejected/defective shape (see
+        ``telegram_rich_html`` module docstring)."""
+        payload: Dict[str, Any] = {"html": _rich_markdown_to_html(content)}
         if skip_entity_detection:
             payload["skip_entity_detection"] = True
         return payload
@@ -3785,10 +3754,11 @@ class TelegramAdapter(BasePlatformAdapter):
         text = content if len(
             content) <= self.MAX_MESSAGE_LENGTH else self.truncate_message(content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)[0]
         # Same MarkdownV2 conversion as ``send`` (MarkdownV2 then plain) so the draft doesn't snap at the end. Exception: a Rich
-        # final with rich drafts disabled previews raw — the legacy formatter would turn pipe tables into bullets.
+        # final with rich drafts disabled previews raw — the legacy formatter would turn pipe tables into bullets, and now
+        # (Rich Messages being the comprehensive default) that's true of nearly every reply, not just tables.
         plain_rich_preview = bool(
             getattr(self, "_rich_messages_enabled", False) and not getattr(self, "_rich_drafts_enabled", False)
-            and self._needs_rich_rendering(text))
+            and self._rich_eligible(text))
         draft_thread_kwargs = self._thread_kwargs_for_draft(chat_id, metadata)
         for use_markdown in ((False,) if plain_rich_preview else (True, False)):
             kwargs: Dict[str, Any] = {
@@ -6714,11 +6684,12 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     if not token:
         from agent.secret_scope import get_secret  # profile-scoped: never borrow another profile's token
         token = get_secret("TELEGRAM_BOT_TOKEN", "") or ""
-    disable_link_previews = bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews"))
+    extra = getattr(pconfig, "extra", {}) or {}
+    disable_link_previews = bool(extra.get("disable_link_previews"))
     from tools.send_message_tool import _send_telegram
     return await _send_telegram(
         token, chat_id, message, media_files=media_files, thread_id=thread_id,
-        disable_link_previews=disable_link_previews, force_document=force_document)
+        disable_link_previews=disable_link_previews, force_document=force_document, rich_extra=extra)
 
 
 def interactive_setup() -> None:

@@ -1,55 +1,38 @@
-"""Tests for rich-message newline normalization (issue #46070).
+"""Tests for rich-message line-break rendering (issue #46070).
 
-When Bot API 10.1 ``sendRichMessage`` is available, slash-command responses
-are sent through the rich path with RAW markdown.  Standard Markdown treats
-a lone ``\\n`` as a soft line break (renders as whitespace), so multi-line
-command output collapses into a single paragraph on Telegram.
+Standard Markdown treats a lone ``\\n`` as a soft line break (renders as whitespace). Bot API
+10.1 ``sendRichMessage`` needs an explicit line-break signal or multi-line content collapses
+into one run of text. ``_rich_message_payload`` renders content through
+``telegram_rich_html.markdown_to_rich_html`` (the ``html`` field), which turns a lone ``\\n``
+into an explicit ``<br>`` within the same ``<p>``, and a blank line (``\\n\\n``) into a new
+``<p>``. Fenced code blocks and pipe tables render as ``<pre>``/``<table>`` and keep their
+internal newlines as real line/row breaks rather than ``<br>``.
 
-``_rich_message_payload`` must normalize single newlines to Markdown hard
-breaks (two trailing spaces + ``\\n``) so they render as visible line breaks.
-Paragraph breaks (``\\n\\n``) and fenced code blocks must be preserved.
-
-The ``telegram`` package is mocked by ``tests/gateway/conftest.py``, so these
-tests construct a real ``TelegramAdapter``.
+The ``telegram`` package is mocked by ``tests/gateway/conftest.py``, so these tests construct a
+real ``TelegramAdapter``.
 """
-
-import pytest
 
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
-@pytest.fixture()
-def adapter():
-    """Bare adapter instance — _rich_message_payload doesn't use self."""
-    return object.__new__(TelegramAdapter)
+class TestRichMessageLineBreaks:
+    """Verify _rich_message_payload's html rendering of single vs. double newlines."""
 
+    def test_single_newlines_become_br(self):
+        """A lone \\n must render as an explicit <br> inside one paragraph."""
+        adapter = object.__new__(TelegramAdapter)
+        payload = adapter._rich_message_payload("Line 1\nLine 2\nLine 3")
+        assert payload["html"] == "<p>Line 1<br>Line 2<br>Line 3</p>"
 
-class TestRichMessageNewlineNormalization:
-    """Verify _rich_message_payload normalizes single \\n to hard breaks."""
+    def test_paragraph_breaks_become_separate_p_tags(self):
+        """Double newlines (paragraph breaks) start a new <p>, not a <br>."""
+        adapter = object.__new__(TelegramAdapter)
+        payload = adapter._rich_message_payload("Paragraph 1\n\nParagraph 2")
+        assert payload["html"] == "<p>Paragraph 1</p><p>Paragraph 2</p>"
 
-    def test_single_newlines_become_hard_breaks(self, adapter):
-        """A lone \\n must gain two trailing spaces (Markdown hard break).
-
-        Standard Markdown soft-break rendering causes Bot API 10.1
-        ``sendRichMessage`` to collapse multi-line content into one paragraph.
-        """
-        content = "Line 1\nLine 2\nLine 3"
-        payload = adapter._rich_message_payload(content)
-        md = payload["markdown"]
-        # Each single \n should now be "  \n" (two spaces + newline)
-        assert "  \n" in md, f"Expected hard break '  \\n' in {md!r}"
-        assert "Line 1  \nLine 2  \nLine 3" == md
-
-    def test_paragraph_breaks_preserved(self, adapter):
-        """Double newlines (paragraph breaks) must NOT gain extra spaces."""
-        content = "Paragraph 1\n\nParagraph 2"
-        payload = adapter._rich_message_payload(content)
-        md = payload["markdown"]
-        # \n\n should remain as-is — no trailing spaces injected
-        assert "Paragraph 1\n\nParagraph 2" == md
-
-    def test_mixed_single_and_double_newlines(self, adapter):
+    def test_mixed_single_and_double_newlines(self):
         """Content with both list items and paragraph breaks must be handled correctly."""
+        adapter = object.__new__(TelegramAdapter)
         content = (
             "Header\n\n"
             "`/new` -- Start\n"
@@ -57,22 +40,27 @@ class TestRichMessageNewlineNormalization:
             "`/reset` -- Reset\n\n"
             "Footer"
         )
-        payload = adapter._rich_message_payload(content)
-        md = payload["markdown"]
-        # Paragraph breaks preserved
-        assert "Header\n\n" in md
-        assert "\n\nFooter" in md
-        # Single newlines converted to hard breaks
-        assert "`/new` -- Start  \n`/model` -- Switch  \n`/reset` -- Reset" in md
+        html = adapter._rich_message_payload(content)["html"]
+        assert html == (
+            "<p>Header</p>"
+            "<p><code>/new</code> -- Start<br><code>/model</code> -- Switch<br>"
+            "<code>/reset</code> -- Reset</p>"
+            "<p>Footer</p>")
 
 
 class TestRichMessageTableProtection:
-    """Hard-break injection must not corrupt GFM tables (rendered natively)."""
+    """Table/fenced-code newlines render as native structure, never a stray <br>."""
 
-    def test_table_rows_keep_bare_newlines(self, adapter):
-        """Table block newlines must stay bare — no '  \\n' inside the table."""
+    def test_table_rows_render_as_table_not_br(self):
         content = "| Col A | Col B |\n|-------|-------|\n| 1 | 2 |\n| 3 | 4 |"
-        md = adapter._rich_message_payload(content)["markdown"]
-        assert "  \n" not in md
-        assert md == content
+        html = object.__new__(TelegramAdapter)._rich_message_payload(content)["html"]
+        assert "<br>" not in html
+        assert html == (
+            "<table><tr><th>Col A</th><th>Col B</th></tr>"
+            "<tr><td>1</td><td>2</td></tr><tr><td>3</td><td>4</td></tr></table>")
 
+    def test_fenced_code_keeps_bare_newlines(self):
+        content = "```\nline one\nline two\n```"
+        html = object.__new__(TelegramAdapter)._rich_message_payload(content)["html"]
+        assert "<br>" not in html
+        assert html == "<pre><code>line one\nline two</code></pre>"

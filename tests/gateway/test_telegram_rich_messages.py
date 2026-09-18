@@ -1,9 +1,10 @@
 """Tests for Bot API 10.1 Rich Messages (sendRichMessage) on Telegram.
 
-Final / new-message replies opportunistically use ``sendRichMessage`` with the
-RAW agent markdown so tables, task lists, etc. render natively. The legacy
-MarkdownV2 ``send_message`` path stays as the fallback for unsupported /
-oversized content and for transports that lack the endpoint.
+Rich Messages is the comprehensive default formatting path: every eligible reply (not just
+tables/task-lists/details/math) is rendered to Telegram Rich HTML (``telegram_rich_html``) and
+sent via ``sendRichMessage``'s ``html`` field. The legacy MarkdownV2 ``send_message`` path stays
+as the fallback for unsupported/oversized content, CJK-garble/Desktop-crash shapes, and
+transports that lack the endpoint.
 
 The ``telegram`` package is mocked by ``tests/gateway/conftest.py``
 (:func:`_ensure_telegram_mock`), so these tests construct a real
@@ -21,6 +22,7 @@ from gateway.config import PlatformConfig
 from gateway.platforms.base import SendResult
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.telegram.telegram_rich_html import markdown_to_rich_html
 from telegram.error import BadRequest, NetworkError, TimedOut
 
 
@@ -134,14 +136,15 @@ async def test_cjk_rich_content_can_be_opted_in(content):
 
     assert result.success is True
     api_kwargs = _rich_api_kwargs(adapter)
-    assert api_kwargs["rich_message"]["markdown"] == content
+    assert api_kwargs["rich_message"]["html"] == markdown_to_rich_html(content)
     adapter._bot.send_message.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_plain_markdown_stays_on_legacy_path():
-    """Ordinary replies (no table/task-list/details/math) stay on the legacy
-    MarkdownV2 path for consistent client rendering, even with rich enabled."""
+async def test_plain_markdown_uses_comprehensive_rich_path():
+    """Ordinary replies (no table/task-list/details/math) now ALSO go through
+    sendRichMessage — Rich Messages is the comprehensive default path, not a
+    special case reserved for tables/lists/details/math."""
     adapter = _make_adapter()
 
     result = await adapter.send("12345", "Hello **there**\n\nA normal reply.")
@@ -149,8 +152,9 @@ async def test_plain_markdown_stays_on_legacy_path():
     assert result.success is True
     bot = adapter._bot
     assert bot is not None
-    bot.do_api_request.assert_not_called()
-    bot.send_message.assert_awaited()
+    api_kwargs = _rich_api_kwargs(adapter)
+    assert api_kwargs["rich_message"]["html"] == "<p>Hello <b>there</b></p><p>A normal reply.</p>"
+    bot.send_message.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -389,6 +393,24 @@ async def test_cjk_rich_content_skips_rich_draft_to_avoid_tdesktop_garble():
     adapter._bot.send_message_draft.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_plain_content_draft_uses_rich_draft_when_rich_drafts_enabled():
+    """Comprehensive rich: an ordinary (non-table) reply also streams via
+    sendRichMessageDraft, using the same semantic renderer as a final send."""
+    adapter = _make_adapter(extra={"rich_drafts": True})
+    adapter._bot.do_api_request = AsyncMock(return_value=True)
+    plain = "Hello **there**\n\nA normal reply."
+
+    result = await adapter.send_draft("12345", draft_id=7, content=plain)
+
+    assert result.success is True
+    adapter._bot.send_message_draft.assert_not_called()
+    adapter._bot.do_api_request.assert_awaited_once()
+    assert adapter._bot.do_api_request.await_args.args[0] == "sendRichMessageDraft"
+    api_kwargs = adapter._bot.do_api_request.await_args.kwargs["api_kwargs"]
+    assert api_kwargs["rich_message"]["html"] == markdown_to_rich_html(plain)
+
+
 # ----------------------------------------------------------------------
 # prefers_fresh_final_streaming: root DMs stay on the no-duplicate edit/draft
 # path (#47048). DM topics that degrade off drafts still need a fresh
@@ -409,7 +431,11 @@ def test_prefers_fresh_final_streaming_for_dm_topic_tables():
         "telegram_reply_to_message_id": "42",
     }
     assert adapter.prefers_fresh_final_streaming(RICH_CONTENT, topic_meta) is True
-    assert adapter.prefers_fresh_final_streaming("Just a sentence.", topic_meta) is False
+    # Comprehensive rich eligibility: a plain sentence is now ALSO rich-eligible (not just
+    # table/task-list/details/math content), so it prefers a fresh final too.
+    assert adapter.prefers_fresh_final_streaming("Just a sentence.", topic_meta) is True
+    # Genuinely ineligible content (blank) still declines.
+    assert adapter.prefers_fresh_final_streaming("   ", topic_meta) is False
     assert adapter.prefers_fresh_final_streaming(
         RICH_CONTENT, {"direct_messages_topic_id": "20189"}
     ) is True
@@ -470,6 +496,25 @@ async def test_rich_table_uses_raw_plain_draft_before_persistent_rich_final():
         chat_id=12345,
         draft_id=7,
         text=RICH_CONTENT,
+    )
+
+
+@pytest.mark.asyncio
+async def test_plain_content_also_uses_raw_plain_draft_before_persistent_rich_final():
+    """Comprehensive rich: since the FINAL of an ordinary reply is now also rich, the plain
+    draft preview (rich_drafts off) must stay raw too — not MarkdownV2-converted — matching the
+    table case above."""
+    adapter = _make_adapter()  # rich messages on, rich drafts off
+    plain = "Hello **there**\n\nA normal reply."
+
+    result = await adapter.send_draft("12345", draft_id=7, content=plain)
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.send_message_draft.assert_awaited_once_with(
+        chat_id=12345,
+        draft_id=7,
+        text=plain,
     )
 
 
@@ -625,7 +670,7 @@ async def test_dm_topic_table_survives_when_drafts_degrade_to_edit():
             rich_kwargs = call.kwargs["api_kwargs"]
             break
     assert rich_kwargs is not None
-    assert "| F1 |" in rich_kwargs["rich_message"]["markdown"]
+    assert "F1" in rich_kwargs["rich_message"]["html"] and "<table>" in rich_kwargs["rich_message"]["html"]
     # Degraded preview is deleted so the user is not left with the bullet rewrite.
     adapter._bot.delete_message.assert_awaited()
 
@@ -684,10 +729,26 @@ async def test_finalize_edit_uses_rich_for_table_content():
     api_kwargs = _rich_edit_kwargs(adapter)
     assert api_kwargs["message_id"] == 555
     # RAW markdown is passed through so table pipes survive.
-    assert api_kwargs["rich_message"]["markdown"] == RICH_CONTENT
+    assert api_kwargs["rich_message"]["html"] == markdown_to_rich_html(RICH_CONTENT)
     # No fresh send / delete — the whole point of the in-place rich edit.
     adapter._bot.edit_message_text.assert_not_called()
     adapter._bot.delete_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_finalize_edit_uses_rich_for_ordinary_content():
+    """Comprehensive rich: finalizing a streamed preview of an ORDINARY (no table/list/details/
+    math) reply also finalizes through the rich editMessageText path, not just special content."""
+    adapter = _make_adapter()
+    plain = "Hello **there**\n\nA normal reply."
+
+    result = await adapter.edit_message("12345", "555", plain, finalize=True)
+
+    assert result.success is True
+    assert result.message_id == "555"
+    api_kwargs = _rich_edit_kwargs(adapter)
+    assert api_kwargs["rich_message"]["html"] == markdown_to_rich_html(plain)
+    adapter._bot.edit_message_text.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -721,7 +782,7 @@ async def test_finalize_edit_dm_topic_omits_send_only_routing_fields():
     assert api_kwargs["message_id"] == 555
     assert "message_thread_id" not in api_kwargs
     assert "direct_messages_topic_id" not in api_kwargs
-    assert "| F1 |" in api_kwargs["rich_message"]["markdown"]
+    assert "F1" in api_kwargs["rich_message"]["html"] and "<table>" in api_kwargs["rich_message"]["html"]
     adapter._bot.edit_message_text.assert_not_called()
 
 
@@ -737,7 +798,7 @@ async def test_finalize_edit_cjk_rich_content_can_be_opted_in():
     assert result.message_id == "555"
     api_kwargs = _rich_edit_kwargs(adapter)
     assert api_kwargs["message_id"] == 555
-    assert api_kwargs["rich_message"]["markdown"] == CJK_RICH_CONTENT
+    assert api_kwargs["rich_message"]["html"] == markdown_to_rich_html(CJK_RICH_CONTENT)
     adapter._bot.edit_message_text.assert_not_called()
 
 
@@ -747,7 +808,9 @@ async def test_legacy_edit_error_logs_redacted_bot_token_without_traceback(monke
 
     monkeypatch.setattr(redact, "_REDACT_ENABLED", False)
     token = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"
-    adapter = _make_adapter()
+    # rich_messages off: exercises the pure legacy MarkdownV2 edit path this test targets,
+    # rather than the (now comprehensive) rich edit finalize path.
+    adapter = _make_adapter(extra={"rich_messages": False})
     adapter._bot.edit_message_text = AsyncMock(
         side_effect=BadRequest(
             f"Bad Request: https://api.telegram.org/bot{token}/editMessageText"
