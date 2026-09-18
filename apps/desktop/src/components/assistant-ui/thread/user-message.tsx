@@ -1,4 +1,5 @@
 import { ActionBarPrimitive, BranchPickerPrimitive, MessagePrimitive, useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
@@ -15,6 +16,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { StopFilled } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $displaySections } from '@/store/display-sections'
 import { $gateway } from '@/store/gateway'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
 import { isWatchWindow } from '@/store/windows'
@@ -342,6 +344,7 @@ export const UserMessage: FC<{
   }, [])
 
   useResizeObserver(measureClamp, clampInnerRef)
+  const toolsHidden = useStore($displaySections).tools === 'hidden'
 
   // Injected background-process notification, not a human prompt — render the
   // compact system-style notice (after all hooks above have run).
@@ -358,8 +361,12 @@ export const UserMessage: FC<{
   }
 
   // Agent-to-agent delivery, not a human prompt — attributed inter-agent card.
+  // `display.sections.tools: hidden` drops it entirely (no DOM, matching the
+  // sender-side notice AgentDeliveryNotice already hides): it is plumbing for
+  // the Bot Mode relay, not something the reader needs, and the recipient's
+  // own reply still renders as a normal assistant message right below it.
   if (AGENT_MESSAGE_RE.test(messageText.trim())) {
-    return (
+    return toolsHidden ? null : (
       <MessagePrimitive.Root
         className="flex w-full min-w-0 flex-col items-stretch pb-(--conversation-turn-gap)"
         data-role="user"

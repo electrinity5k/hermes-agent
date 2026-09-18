@@ -230,6 +230,20 @@ const BACKTICK_NOISE_RE = /`{3,}/g
 export const selectMessageRunning = (state: MessageRunningStateSlice) =>
   state.thread.isRunning && state.message.status?.type === 'running'
 
+/** A call sealed without a result (turn stopped, completion event lost) is
+ *  neither pending nor successful — mirrors the local check `message-parts.tsx`
+ *  uses for its own per-row gate. */
+export const toolSettledWithoutResult = (tool: Pick<ToolPart, 'completedAt' | 'result'>): boolean =>
+  tool.result === undefined && tool.completedAt !== undefined
+
+/** Whether an ordinary (non-card) tool call must stay visible even when
+ *  `display.sections.tools` is hidden — an error or a dangling call still
+ *  needs to be debuggable. Shared by the per-row gate (`message-parts.tsx`
+ *  ChainToolFallback) and the grouped-run gate (`fallback.tsx` ToolRun) so
+ *  a run's summary header and its rows never disagree about what survives. */
+export const toolRequiresVisibleRow = (tool: Pick<ToolPart, 'completedAt' | 'isError' | 'result'>): boolean =>
+  Boolean(tool.isError) || toolSettledWithoutResult(tool)
+
 function titleForTool(name: string): string {
   const normalized = name.replace(/^browser_/, '').replace(/^web_/, '')
 

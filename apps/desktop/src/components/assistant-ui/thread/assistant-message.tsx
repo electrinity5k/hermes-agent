@@ -52,6 +52,7 @@ import { markAssistantIdSpoken } from '@/lib/spoken-reply'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
+import { $displaySections } from '@/store/display-sections'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { notifyError } from '@/store/notifications'
 import { startManualProviderOAuth } from '@/store/onboarding'
@@ -125,11 +126,18 @@ export const AssistantMessage: FC<AssistantMessageProps> = props => {
     return null
   })
 
+  // `display.sections.tools: hidden` drops the "Replied to X" collapse/
+  // disclosure card entirely (no DOM) — it is Bot Mode relay chrome, not
+  // something the reader needs — while the assistant's own answer still
+  // renders through the ordinary (uncollapsed) body below, exactly like any
+  // other reply.
+  const toolsHidden = useStore($displaySections).tools === 'hidden'
+
   // The collapse gate below needs the LIVE running status, but only an
   // inter-agent reply can ever be collapsed. Dispatching on that first keeps
   // the status subscription out of the standard path entirely — the standard
   // message root now re-renders for content, never for a pending flip.
-  return interAgentSender ? (
+  return interAgentSender && !toolsHidden ? (
     <InterAgentAssistantMessage {...props} sender={interAgentSender} />
   ) : (
     <AssistantMessageBody {...props} />

@@ -47,6 +47,7 @@ import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { toolResultRecord } from '@/lib/tool-result-metadata'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
+import { $displaySections } from '@/store/display-sections'
 import { recordPreviewArtifact } from '@/store/preview-status'
 import { sessionApprovalRequest } from '@/store/prompts'
 import { $toolInlineDiff } from '@/store/tool-diffs'
@@ -71,6 +72,7 @@ import {
   toolCopyPayload,
   toolEntryDisclosureId,
   type ToolPart,
+  toolRequiresVisibleRow,
   type ToolStatus,
   type ToolTitleAction
 } from './fallback-model'
@@ -844,6 +846,12 @@ interface ToolRunState {
   entryIds: readonly string[]
   key: string
   live: boolean
+  /** Whether at least one call in the run is an error or a dangling
+   *  (sealed-without-result) call — the only rows `display.sections.tools:
+   *  hidden` still lets through. Drives whether the run mounts ANY DOM when
+   *  tools are hidden: a run of nothing but hidden ordinary rows must not
+   *  paint even an empty wrapper. */
+  requiresVisibleRow: boolean
   startedAt?: number
   summary: string
 }
@@ -913,6 +921,7 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
           entryIds: tools.map(tool => toolEntryDisclosureId(state.message.id, tool)),
           key: `${state.message.id}:${tools[0]?.toolCallId ?? ''}`,
           live,
+          requiresVisibleRow: tools.some(toolRequiresVisibleRow),
           startedAt: timelineTools.reduce<number | undefined>(
             (earliest, tool) =>
               tool.timestamp === undefined
@@ -951,23 +960,34 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
   startIndex
 }) => {
   const messageRunning = useAuiState(selectMessageRunning)
-  const { completedAt, count, entryIds, key, live, startedAt, summary, approvalActivity } = useToolRun(
-    startIndex,
-    endIndex
-  )
+
+  const { completedAt, count, entryIds, key, live, requiresVisibleRow, startedAt, summary, approvalActivity } =
+    useToolRun(startIndex, endIndex)
+
   const sessionId = useStore(useSessionView().$runtimeId)
   const approval = useStore(useMemo(() => sessionApprovalRequest(sessionId), [sessionId]))
   const currentTurn = useAuiState(state => isCurrentTurnMessage(state.thread.messages, state.message.id))
+  const toolsHidden = useStore($displaySections).tools === 'hidden'
   const disclosureId = `tool-run:${key}`
   const persistedOpen = useStore($toolDisclosureOpen(disclosureId))
   const rowOpen = useStore(useMemo(() => $anyToolDisclosureOpen(entryIds), [entryIds]))
   const enterRef = useEnterAnimation(messageRunning, `tool-run:${key}`)
   const representedByApproval = !!approval && currentTurn && approvalActivity
-  const expanded = count < 2 || (persistedOpen ?? rowOpen)
+  // With tools hidden there is no header/caret left to toggle open, so every
+  // remaining child has to mount unconditionally — each row (ChainToolFallback)
+  // is what actually decides whether it paints or returns null.
+  const expanded = toolsHidden || count < 2 || (persistedOpen ?? rowOpen)
 
   // Pending command activity is summarized by the persistent approval host.
   // An explicit result disclosure still uses the original tool runtime.
   if (representedByApproval && !rowOpen && !persistedOpen) {
+    return null
+  }
+
+  // A run of nothing but ordinary, hidden rows (no error, no dangling call)
+  // must render NO DOM at all — not even an empty wrapper — the same contract
+  // a single hidden row already honors (ChainToolFallback returns null).
+  if (toolsHidden && !requiresVisibleRow) {
     return null
   }
 
@@ -979,7 +999,7 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
         data-tool-group=""
         ref={enterRef}
       >
-        {count > 1 && !representedByApproval && (
+        {count > 1 && !toolsHidden && !representedByApproval && (
           <ToolRunHeader
             completedAt={completedAt}
             live={live}
@@ -989,7 +1009,7 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
             summary={summary}
           />
         )}
-        {count > 1 && live && !expanded && <ToolRunTicker>{children}</ToolRunTicker>}
+        {count > 1 && !toolsHidden && live && !expanded && <ToolRunTicker>{children}</ToolRunTicker>}
         {expanded && <div className="grid min-w-0 max-w-full gap-(--tool-row-gap)">{children}</div>}
       </div>
     </ToolRunDisclosureContext.Provider>
