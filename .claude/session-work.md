@@ -4,16 +4,17 @@ _Maintained by `/close` and the M4 gateway closeout. Top zone regenerates each r
 On opening this project, read this file to rehydrate._
 
 ## Current State
-_updated: 2026-09-18 13:34 (M4 gateway closeout)_
+_updated: 2026-09-18 17:04 (M4 gateway closeout)_
 
-- **Project**: hermes-agent · branch `main` · `bd9c88e` — fix(desktop): hide grouped tool summaries and inter-agent notices when tools section is hidden
+- **Project**: hermes-agent · branch `main` · `53a15e1` — feat(telegram): Rich Messages is the comprehensive formatting path
 - **Working tree**: clean
-- **Preflight**: not run — skipped by the work order
-- **Where to test**: Hermes Desktop app (native) — packaged bundle already swapped into /Users/m4/.hermes/hermes-agent/apps/desktop/release/mac-arm64/Hermes.app; open RCKT Bot's Bot Chat after the app's next natural relaunch — local native app on this machine, no login/password
-- **Next step**: Live visual re-check inside the running Hermes Desktop app once it is next relaunched (not done here per the no-restart constraint) to confirm historical Bot Chat transcript renders clean after the swapped bundle takes effect.
+- **Preflight**: passed 2026-09-18, reused — last preflight passed 0 day(s) ago (2026-09-18T14:47:24.749Z)
+- **Where to test**: branch main (no deploy confirmed)
+- **Next step**: Mobile/desktop visual confirmation of ordinary (non-table) replies through the new html renderer — Test 2's mobile confirmation covered the accepted <h4>/<p>/<ul><li> shape in isolation; RCKT Bot's planned fleet rollout should re-confirm a normal heading+paragraphs+bullets reply renders correctly end-to-end on a live bot before wider use.
 
 ### Mid-finished / blockers
-- none
+- [ ] The bulk tests/tools/ full-suite background run had not finished when this job ended (slow tests: daytona, mcp_oauth device flow, video-gen). Not expected to surface anything new since every file it covers that touches Telegram/send_message was independently verified green.
+- [ ] No live Telegram API call was made — verification is unit/mock-level against the documented Bot API 10.1/10.2 Rich HTML tag spec (fetched and cross-checked directly), matching the constraint against claiming visual verification from API acceptance alone.
 ### Decisions (don't re-litigate)
 - none yet
 
@@ -21,6 +22,10 @@ _updated: 2026-09-18 13:34 (M4 gateway closeout)_
 
 ## Session log
 
+### 2026-09-18 17:04 — M4 gateway job (completed)
+- Rich Messages is now the comprehensive semantic formatting path for Telegram: a new markdown-to-Rich-HTML renderer (headings, paragraphs, ordered/unordered/nested/task lists, emphasis, links, code, tables, details, math) feeds sendRichMessage's `html` field — the mobile-confirmed accepted shape — for every eligible reply, not just tables/task-lists/details/math. The same renderer now backs sendRichMessage, sendRichMessageDraft, rich finalize edits, and standalone/cron delivery.
+- Verified: Set up a local .venv (pytest + project deps + aiohttp) since neither existing venv had pytest. Ran: renderer unit tests (22/22), full test_telegram_rich_messages.py (43/43, including new comprehensive-eligibility, draft, and finalize-edit cases), rewritten line-break tests (5/5), new standalone-rich-send tests (5/5), the full tests/gateway/test_telegram_*.py suite (701/701), tests/cron/ delivery suites (192/192), tests/gateway/test_config.py and test_send_error_classification.py (82/82), and the send_message tool/discord/whatsapp/slack caption suites (33/33) — all green, no regressions. A broader tests/tools/ full-suite run was still in progress in the background when this job ended; every file in it that touches Telegram/send_message was already covered and passing in the targeted runs above, and the ~172 failures seen before installing aiohttp were confirmed to be pre-existing missing-dependency errors (aiohttp/daytona/mcp/etc.), unrelated to this change.
+- Pushed to `main`
 ### 2026-09-18 13:34 — M4 gateway job (completed)
 - Extended the Desktop display.sections gating so hidden grouped tool-run summaries (Explored/Ran/Loaded skill) and the two dedicated inter-agent chrome paths (incoming "Message from X" card, outgoing "Replied to X" collapse) render no DOM when tools are hidden, while errors/dangling calls and the assistant's real reply text stay visible.
 - Verified: New focused tests proven red on pre-fix code via git stash, green after fix (6/6). Full display-sections/tool/thread suites 106/106 pass. Full `vitest run`: 10307 passed, 3 pre-existing unrelated failures (electron ssh-updater + voice-prefs localStorage) confirmed identical on unmodified tree. tsc --noEmit and eslint clean. `npm run build` + `npm run builder -- --dir --publish never` succeeded.
