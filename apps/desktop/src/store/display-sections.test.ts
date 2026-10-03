@@ -14,7 +14,12 @@ describe('setDisplaySectionsFromConfig', () => {
       show_reasoning: false
     })
 
-    expect($displaySections.get()).toEqual({ activity: 'hidden', subagents: 'hidden', thinking: 'hidden', tools: 'hidden' })
+    expect($displaySections.get()).toEqual({
+      activity: 'hidden',
+      subagents: 'hidden',
+      thinking: 'hidden',
+      tools: 'hidden'
+    })
   })
 
   it('defaults thinking/tools open, activity closed, and subagents to the global mode when nothing is configured', () => {

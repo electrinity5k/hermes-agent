@@ -9,7 +9,10 @@ import { setDisplaySectionsFromConfig } from '@/store/display-sections'
 // state through `useAuiState` — stub it to a plain selector over a
 // module-level fixture, same pattern as message-parts-display-sections.test.tsx,
 // so this mounts without a full AssistantRuntimeProvider.
-let auiState: unknown = { message: { id: 'm1', parts: [], status: { type: 'complete' } }, thread: { isRunning: false, messages: [] } }
+let auiState: unknown = {
+  message: { id: 'm1', parts: [], status: { type: 'complete' } },
+  thread: { isRunning: false, messages: [] }
+}
 
 vi.mock('@assistant-ui/react', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -39,7 +42,11 @@ const Fallback = MESSAGE_PARTS_COMPONENTS.tools.Fallback
 type FallbackProps = ComponentProps<typeof Fallback>
 
 function withProviders(node: ReactNode) {
-  return <I18nProvider configClient={null} initialLocale="en">{node}</I18nProvider>
+  return (
+    <I18nProvider configClient={null} initialLocale="en">
+      {node}
+    </I18nProvider>
+  )
 }
 
 /** Two ordinary `search_files` calls — the "Explored 2 files" summary

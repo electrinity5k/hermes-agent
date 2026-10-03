@@ -92,7 +92,11 @@ describe('reasoning disclosure honors display.sections.thinking', () => {
   it('renders no DOM for a settled reasoning block (resumed transcript history) once thinking is hidden', () => {
     setDisplaySectionsFromConfig({ show_reasoning: false })
     auiState = {
-      message: { id: 'm1', parts: [{ type: 'reasoning', text: 'Already thought about this' }], status: { type: 'complete' } },
+      message: {
+        id: 'm1',
+        parts: [{ type: 'reasoning', text: 'Already thought about this' }],
+        status: { type: 'complete' }
+      },
       thread: { isRunning: false }
     }
 
@@ -191,13 +195,20 @@ describe('final assistant text stays visible regardless of hidden sections', () 
       sections: { activity: 'hidden', subagents: 'hidden', thinking: 'hidden', tools: 'hidden' },
       show_reasoning: false
     })
-    expect($displaySections.get()).toEqual({ activity: 'hidden', subagents: 'hidden', thinking: 'hidden', tools: 'hidden' })
+    expect($displaySections.get()).toEqual({
+      activity: 'hidden',
+      subagents: 'hidden',
+      thinking: 'hidden',
+      tools: 'hidden'
+    })
 
     partText = 'Here is the final answer.'
 
     const { Text } = MESSAGE_PARTS_COMPONENTS
 
-    render(withProviders(<Text completedAt={100} status={{ type: 'complete' }} text={partText} timestamp={90} type="text" />))
+    render(
+      withProviders(<Text completedAt={100} status={{ type: 'complete' }} text={partText} timestamp={90} type="text" />)
+    )
 
     expect(screen.getByText('Here is the final answer.')).toBeTruthy()
   })

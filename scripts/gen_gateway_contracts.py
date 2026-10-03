@@ -189,7 +189,7 @@ def render_ts() -> str:
     for m in models:
         r.ensure(name_of[m])
 
-    out = [HEADER, "/* eslint-disable */\n", "// ── Types ──\n"]
+    out = [HEADER, "\n", "// ── Types ──\n"]
     out.extend(r.emitted.values())
 
     out.append("\n// ── Client→server methods ──\n")

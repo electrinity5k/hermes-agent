@@ -38,7 +38,8 @@ const norm = (v: unknown): string =>
 
 const parseDetailsMode = (v: unknown): DetailsMode | null => MODES.find(m => m === norm(v)) ?? null
 
-const isSectionName = (v: unknown): v is SectionName => typeof v === 'string' && SECTION_NAMES.includes(v as SectionName)
+const isSectionName = (v: unknown): v is SectionName =>
+  typeof v === 'string' && SECTION_NAMES.includes(v as SectionName)
 
 const resolveDetailsMode = (v: unknown): DetailsMode => parseDetailsMode(v) ?? 'collapsed'
 
